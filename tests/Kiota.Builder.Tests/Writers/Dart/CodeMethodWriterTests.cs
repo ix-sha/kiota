@@ -1270,6 +1270,133 @@ public sealed class CodeMethodWriterTests : IDisposable
         AssertExtensions.Before("return complexType1Value!.getFieldDeserializers()", "<String, void Function(ParseNode)>{}", result);
         AssertExtensions.CurlyBracesAreClosed(result);
     }
+    private CodeClass AddUnionTypeWithoutDiscriminator()
+    {
+        // Mirrors AddUnionType but without a DiscriminatorPropertyName, while
+        // still adding auto-populated mappings keyed by member type name
+        // (matches what KiotaBuilder produces for a oneOf with no discriminator).
+        var complexType1 = root.AddClass(new CodeClass
+        {
+            Name = "ComplexType1",
+            Kind = CodeClassKind.Model,
+        }).First();
+        var complexType2 = root.AddClass(new CodeClass
+        {
+            Name = "ComplexType2",
+            Kind = CodeClassKind.Model,
+        }).First();
+        var unionType = root.AddClass(new CodeClass
+        {
+            Name = "UnionType",
+            Kind = CodeClassKind.Model,
+            OriginalComposedType = new CodeUnionType
+            {
+                Name = "UnionType",
+            },
+            DiscriminatorInformation = new(),
+        }).First();
+        var cType1 = new CodeType { Name = "ComplexType1", TypeDefinition = complexType1 };
+        var cType2 = new CodeType { Name = "ComplexType2", TypeDefinition = complexType2 };
+        unionType.DiscriminatorInformation.AddDiscriminatorMapping("ComplexType1", new CodeType
+        {
+            Name = "ComplexType1",
+            TypeDefinition = complexType1
+        });
+        unionType.DiscriminatorInformation.AddDiscriminatorMapping("ComplexType2", new CodeType
+        {
+            Name = "ComplexType2",
+            TypeDefinition = complexType2
+        });
+        unionType.OriginalComposedType.AddType(cType1);
+        unionType.OriginalComposedType.AddType(cType2);
+        unionType.AddProperty(new CodeProperty
+        {
+            Name = "complexType1Value",
+            Type = cType1,
+            Kind = CodePropertyKind.Custom,
+            Setter = new CodeMethod
+            {
+                Name = "setComplexType1Value",
+                ReturnType = new CodeType { Name = "void" },
+                Kind = CodeMethodKind.Setter,
+            },
+            Getter = new CodeMethod
+            {
+                Name = "getComplexType1Value",
+                ReturnType = cType1,
+                Kind = CodeMethodKind.Getter,
+            }
+        });
+        unionType.AddProperty(new CodeProperty
+        {
+            Name = "complexType2Value",
+            Type = cType2,
+            Kind = CodePropertyKind.Custom,
+            Setter = new CodeMethod
+            {
+                Name = "setComplexType2Value",
+                ReturnType = new CodeType { Name = "void" },
+                Kind = CodeMethodKind.Setter,
+            },
+            Getter = new CodeMethod
+            {
+                Name = "getComplexType2Value",
+                ReturnType = cType2,
+                Kind = CodeMethodKind.Getter,
+            }
+        });
+        return unionType;
+    }
+    [Fact]
+    public void WritesModelFactoryBodyForUnionModelsWithoutDiscriminator()
+    {
+        setup();
+        var wrapper = AddUnionTypeWithoutDiscriminator();
+        var factoryMethod = wrapper.AddMethod(new CodeMethod
+        {
+            Name = "factory",
+            Kind = CodeMethodKind.Factory,
+            ReturnType = new CodeType { Name = "UnionType", TypeDefinition = wrapper },
+        }).First();
+        factoryMethod.AddParameter(new CodeParameter
+        {
+            Name = "parseNode",
+            Kind = CodeParameterKind.ParseNode,
+            Type = new CodeType { Name = "ParseNode" }
+        });
+        writer.Write(factoryMethod);
+        var result = tw.ToString();
+        Assert.DoesNotContain("mappingValue", result);
+        Assert.DoesNotContain("getChildNode", result);
+        Assert.Contains("var result = UnionType()", result);
+        Assert.Contains("result.complexType1Value = ComplexType1()", result);
+        Assert.Contains("result.complexType2Value = ComplexType2()", result);
+        Assert.Contains("return result;", result);
+        AssertExtensions.CurlyBracesAreClosed(result);
+    }
+    [Fact]
+    public void WritesUnionDeSerializerBodyWithoutDiscriminator()
+    {
+        setup();
+        var wrapper = AddUnionTypeWithoutDiscriminator();
+        var deserializationMethod = wrapper.AddMethod(new CodeMethod
+        {
+            Name = "getFieldDeserializers",
+            Kind = CodeMethodKind.Deserializer,
+            IsAsync = false,
+            ReturnType = new CodeType
+            {
+                Name = "Map<String, void Function(ParseNode)>",
+            },
+        }).First();
+        writer.Write(deserializationMethod);
+        var result = tw.ToString();
+        Assert.Contains("var deserializers = <String, void Function(ParseNode)>{};", result);
+        Assert.Contains("if(complexType1Value != null){complexType1Value!.getFieldDeserializers().forEach((k,v) => deserializers.putIfAbsent(k, ()=>v));}", result);
+        Assert.Contains("if(complexType2Value != null){complexType2Value!.getFieldDeserializers().forEach((k,v) => deserializers.putIfAbsent(k, ()=>v));}", result);
+        Assert.Contains("return deserializers", result);
+        AssertExtensions.CurlyBracesAreClosed(result);
+    }
     [Fact]
     public void WritesIntersectionDeSerializerBody()
     {

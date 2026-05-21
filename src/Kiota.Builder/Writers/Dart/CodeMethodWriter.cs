@@ -161,7 +161,8 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, DartConventionServ
     {
         writer.WriteLine($"var {ResultVarName} = {parentClass.Name}();");
 
-        if (parentClass.GetPropertiesOfKind(CodePropertyKind.Custom)
+        if (parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation &&
+            parentClass.GetPropertiesOfKind(CodePropertyKind.Custom)
             .Any(x => x.Type is CodeType cType && cType.TypeDefinition is CodeClass && !cType.IsCollection &&
                       parentClass.DiscriminatorInformation.DiscriminatorMappings.Any(m => m.Value.Name.Equals(cType.Name, StringComparison.OrdinalIgnoreCase))))
         {
