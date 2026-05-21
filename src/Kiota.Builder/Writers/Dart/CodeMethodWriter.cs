@@ -184,6 +184,10 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, DartConventionServ
                         writer.CloseBlock();
                         includeElse = true;
                     }
+                    else if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+                    {
+                        writer.WriteLine($"{ResultVarName}.{property.Name} = {conventions.GetTypeString(propertyType, codeElement)}();");
+                    }
                 }
                 else if (propertyType.TypeDefinition is CodeClass && propertyType.IsCollection || propertyType.TypeDefinition is null || propertyType.TypeDefinition is CodeEnum)
                 {
@@ -398,22 +402,34 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, DartConventionServ
     }
     private void WriteDeserializerBodyForUnionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)
     {
-        var includeElse = false;
-        foreach (var otherPropName in parentClass
-                                        .GetPropertiesOfKind(CodePropertyKind.Custom)
-                                        .Where(static x => !x.ExistsInBaseType)
-                                        .Where(static x => x.Type is CodeType propertyType && !propertyType.IsCollection && propertyType.TypeDefinition is CodeClass)
-                                        .OrderBy(static x => x, CodePropertyTypeForwardComparer)
-                                        .ThenBy(static x => x.Name)
-                                        .Select(static x => x.Name))
+        var complexProperties = parentClass
+                                    .GetPropertiesOfKind(CodePropertyKind.Custom)
+                                    .Where(static x => !x.ExistsInBaseType)
+                                    .Where(static x => x.Type is CodeType propertyType && !propertyType.IsCollection && propertyType.TypeDefinition is CodeClass)
+                                    .OrderBy(static x => x, CodePropertyTypeForwardComparer)
+                                    .ThenBy(static x => x.Name)
+                                    .Select(static x => x.Name)
+                                    .ToArray();
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation && complexProperties.Length > 0)
         {
-            writer.StartBlock($"{(includeElse ? "else " : string.Empty)}if({otherPropName} != null) {{");
-            writer.WriteLine($"return {otherPropName}!.{method.Name}();");
-            writer.CloseBlock();
-            if (!includeElse)
-                includeElse = true;
+            writer.WriteLine($"var {DeserializerName} = {DefaultDeserializerReturnInstance}{{}};");
+            foreach (var propName in complexProperties)
+                writer.WriteLine($"if({propName} != null){{{propName}!.{method.Name}().forEach((k,v) => {DeserializerName}.putIfAbsent(k, ()=>v));}}");
+            writer.WriteLine($"return {DeserializerName};");
         }
-        writer.WriteLine($"return {DefaultDeserializerReturnInstance}{{}};");
+        else
+        {
+            var includeElse = false;
+            foreach (var otherPropName in complexProperties)
+            {
+                writer.StartBlock($"{(includeElse ? "else " : string.Empty)}if({otherPropName} != null) {{");
+                writer.WriteLine($"return {otherPropName}!.{method.Name}();");
+                writer.CloseBlock();
+                if (!includeElse)
+                    includeElse = true;
+            }
+            writer.WriteLine($"return {DefaultDeserializerReturnInstance}{{}};");
+        }
     }
     private const string DeserializerName = "deserializers";
 
