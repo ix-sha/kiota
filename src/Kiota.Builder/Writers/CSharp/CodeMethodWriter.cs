@@ -142,6 +142,10 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, CSharpConventionSe
                         writer.WriteBlock(lines: $"{ResultVarName}.{property.Name.ToFirstCharacterUpperCase()} = new {conventions.GetTypeString(propertyType, codeElement)}();");
                         includeElse = true;
                     }
+                    else if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+                    {
+                        writer.WriteLine($"{ResultVarName}.{property.Name.ToFirstCharacterUpperCase()} = new {conventions.GetTypeString(propertyType, codeElement)}();");
+                    }
                 }
                 else if (propertyType.TypeDefinition is CodeClass && propertyType.IsCollection || propertyType.TypeDefinition is null || propertyType.TypeDefinition is CodeEnum)
                 {
@@ -321,19 +325,35 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, CSharpConventionSe
     }
     private void WriteDeserializerBodyForUnionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)
     {
-        var includeElse = false;
-        foreach (var otherPropName in parentClass
-                                        .GetPropertiesOfKind(CodePropertyKind.Custom)
-                                        .Where(static x => !x.ExistsInBaseType)
-                                        .Where(static x => x.Type is CodeType propertyType && !propertyType.IsCollection && propertyType.TypeDefinition is CodeClass)
-                                        .OrderBy(static x => x, CodePropertyTypeForwardComparer)
-                                        .ThenBy(static x => x.Name)
-                                        .Select(static x => x.Name.ToFirstCharacterUpperCase()))
+        var complexProperties = parentClass
+                                    .GetPropertiesOfKind(CodePropertyKind.Custom)
+                                    .Where(static x => !x.ExistsInBaseType)
+                                    .Where(static x => x.Type is CodeType propertyType && !propertyType.IsCollection && propertyType.TypeDefinition is CodeClass)
+                                    .OrderBy(static x => x, CodePropertyTypeForwardComparer)
+                                    .ThenBy(static x => x.Name)
+                                    .Select(static x => x.Name.ToFirstCharacterUpperCase())
+                                    .ToArray();
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation && complexProperties.Length > 0)
         {
-            writer.WriteLine($"{(includeElse ? "else " : string.Empty)}if({otherPropName} != null)");
-            writer.WriteBlock(lines: $"return {otherPropName}.{method.Name.ToFirstCharacterUpperCase()}();");
-            if (!includeElse)
-                includeElse = true;
+            var propertiesNamesAsConditions = complexProperties
+                                    .Select(static x => $"{x} != null")
+                                    .Aggregate(static (x, y) => $"{x} || {y}");
+            writer.WriteLine($"if({propertiesNamesAsConditions})");
+            writer.StartBlock();
+            var propertiesNamesAsArgument = complexProperties.Aggregate(static (x, y) => $"{x}, {y}");
+            writer.WriteLine($"return ParseNodeHelper.MergeDeserializersForIntersectionWrapper({propertiesNamesAsArgument});");
+            writer.CloseBlock();
+        }
+        else
+        {
+            var includeElse = false;
+            foreach (var otherPropName in complexProperties)
+            {
+                writer.WriteLine($"{(includeElse ? "else " : string.Empty)}if({otherPropName} != null)");
+                writer.WriteBlock(lines: $"return {otherPropName}.{method.Name.ToFirstCharacterUpperCase()}();");
+                if (!includeElse)
+                    includeElse = true;
+            }
         }
         writer.WriteLine($"return {DefaultDeserializerValue}();");
     }
