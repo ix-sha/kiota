@@ -149,7 +149,7 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, PythonConventionSe
                 if (propertyType.TypeDefinition is CodeClass && !propertyType.IsCollection)
                 {
                     var mappedType = parentClass.DiscriminatorInformation.DiscriminatorMappings.FirstOrDefault(x => x.Value.Name.Equals(propertyType.Name, StringComparison.OrdinalIgnoreCase));
-                    if (!string.IsNullOrEmpty(mappedType.Key))
+                    if (!string.IsNullOrEmpty(mappedType.Key) && parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
                     {
                         writer.StartBlock($"{(includeElse ? "el" : string.Empty)}if {DiscriminatorMappingVarName} and {DiscriminatorMappingVarName}.casefold() == \"{mappedType.Key.SanitizeDoubleQuote()}\".casefold():");
                         _codeUsingWriter.WriteDeferredImport(parentClass, propertyType.Name, writer);

@@ -1585,6 +1585,11 @@ public sealed class CodeMethodWriterTests : IDisposable
     [Fact]
     public void WritesModelFactoryBodyForUnionModelsWithoutDiscriminator()
     {
+        // Reproduces real Kiota behaviour for a oneOf without a discriminator keyword:
+        // DiscriminatorPropertyName is empty, but DiscriminatorMappings is auto-populated
+        // from the oneOf member schema names. The generated factory must not emit a
+        // mappingValue switch (mappingValue is never declared in this case) and must
+        // initialize every complex subtype property unconditionally.
         setup();
         var complexType1 = root.AddClass(new CodeClass
         {
@@ -1608,6 +1613,17 @@ public sealed class CodeMethodWriterTests : IDisposable
         }).First();
         var cType1 = new CodeType { Name = "ComplexType1", TypeDefinition = complexType1 };
         var cType2 = new CodeType { Name = "ComplexType2", TypeDefinition = complexType2 };
+        // No DiscriminatorPropertyName, but mappings auto-populated from member names
+        unionTypeWrapper.DiscriminatorInformation.AddDiscriminatorMapping("ComplexType1", new CodeType
+        {
+            Name = "ComplexType1",
+            TypeDefinition = complexType1
+        });
+        unionTypeWrapper.DiscriminatorInformation.AddDiscriminatorMapping("ComplexType2", new CodeType
+        {
+            Name = "ComplexType2",
+            TypeDefinition = complexType2
+        });
         unionTypeWrapper.OriginalComposedType.AddType(cType1);
         unionTypeWrapper.OriginalComposedType.AddType(cType2);
         unionTypeWrapper.AddProperty(new CodeProperty
@@ -1637,7 +1653,8 @@ public sealed class CodeMethodWriterTests : IDisposable
         writer.Write(factoryMethod);
         var result = tw.ToString();
         Assert.DoesNotContain("var mappingValue = parseNode.GetChildNode", result);
-        Assert.DoesNotContain("if(\"", result);
+        Assert.DoesNotContain("mappingValue", result);
+        Assert.DoesNotContain(".Equals(mappingValue", result);
         Assert.Contains("var result = new UnionTypeWrapper()", result);
         Assert.Contains("result.ComplexType1Value = new ComplexType1()", result);
         Assert.Contains("result.ComplexType2Value = new ComplexType2()", result);
