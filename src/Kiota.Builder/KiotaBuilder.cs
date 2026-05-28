@@ -875,7 +875,7 @@ public partial class KiotaBuilder
         {
             Access = AccessModifier.Private,
             Name = "urlTemplate",
-            DefaultValue = $"\"{currentNode.GetUrlTemplateForPathItem()}\"",
+            DefaultValue = $"\"{currentNode.GetUrlTemplate()}\"",
             ReadOnly = true,
             Documentation = new()
             {
