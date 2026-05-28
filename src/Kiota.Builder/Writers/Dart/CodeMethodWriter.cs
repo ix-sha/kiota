@@ -160,7 +160,10 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, DartConventionServ
     {
         writer.WriteLine($"var {ResultVarName} = {parentClass.Name}();");
 
-        if (parentClass.GetPropertiesOfKind(CodePropertyKind.Custom).Where(static x => x.Type is CodeType cType && cType.TypeDefinition is CodeClass && !cType.IsCollection).Any())
+        if (parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation &&
+            parentClass.GetPropertiesOfKind(CodePropertyKind.Custom)
+            .Any(x => x.Type is CodeType cType && cType.TypeDefinition is CodeClass && !cType.IsCollection &&
+                      parentClass.DiscriminatorInformation.DiscriminatorMappings.Any(m => m.Value.Name.Equals(cType.Name, StringComparison.OrdinalIgnoreCase))))
         {
             var discriminatorPropertyName = SanitizeDartSingleQuoteLiteral(parentClass.DiscriminatorInformation.DiscriminatorPropertyName);
             writer.WriteLine($"var {DiscriminatorMappingVarName} = {parseNodeParameter.Name}.getChildNode('{discriminatorPropertyName}')?.getStringValue();");
@@ -174,9 +177,17 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, DartConventionServ
                 if (propertyType.TypeDefinition is CodeClass && !propertyType.IsCollection)
                 {
                     var mappedType = parentClass.DiscriminatorInformation.DiscriminatorMappings.FirstOrDefault(x => x.Value.Name.Equals(propertyType.Name, StringComparison.OrdinalIgnoreCase));
-                    writer.StartBlock($"{(includeElse ? "else " : string.Empty)}if('{SanitizeDartSingleQuoteLiteral(mappedType.Key)}' == {DiscriminatorMappingVarName}) {{");
-                    writer.WriteLine($"{ResultVarName}.{property.Name} = {conventions.GetTypeString(propertyType, codeElement)}();");
-                    writer.CloseBlock();
+                    if (!string.IsNullOrEmpty(mappedType.Key) && parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+                    {
+                        writer.StartBlock($"{(includeElse ? "else " : string.Empty)}if('{SanitizeDartSingleQuoteLiteral(mappedType.Key)}' == {DiscriminatorMappingVarName}) {{");
+                        writer.WriteLine($"{ResultVarName}.{property.Name} = {conventions.GetTypeString(propertyType, codeElement)}();");
+                        writer.CloseBlock();
+                        includeElse = true;
+                    }
+                    else if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+                    {
+                        writer.WriteLine($"{ResultVarName}.{property.Name} = {conventions.GetTypeString(propertyType, codeElement)}();");
+                    }
                 }
                 else if (propertyType.TypeDefinition is CodeClass && propertyType.IsCollection || propertyType.TypeDefinition is null || propertyType.TypeDefinition is CodeEnum)
                 {
@@ -379,22 +390,34 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, DartConventionServ
     }
     private void WriteDeserializerBodyForUnionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)
     {
-        var includeElse = false;
-        foreach (var otherPropName in parentClass
-                                        .GetPropertiesOfKind(CodePropertyKind.Custom)
-                                        .Where(static x => !x.ExistsInBaseType)
-                                        .Where(static x => x.Type is CodeType propertyType && !propertyType.IsCollection && propertyType.TypeDefinition is CodeClass)
-                                        .OrderBy(static x => x, CodePropertyTypeForwardComparer)
-                                        .ThenBy(static x => x.Name)
-                                        .Select(static x => x.Name))
+        var complexProperties = parentClass
+                                    .GetPropertiesOfKind(CodePropertyKind.Custom)
+                                    .Where(static x => !x.ExistsInBaseType)
+                                    .Where(static x => x.Type is CodeType propertyType && !propertyType.IsCollection && propertyType.TypeDefinition is CodeClass)
+                                    .OrderBy(static x => x, CodePropertyTypeForwardComparer)
+                                    .ThenBy(static x => x.Name)
+                                    .Select(static x => x.Name)
+                                    .ToArray();
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation && complexProperties.Length > 0)
         {
-            writer.StartBlock($"{(includeElse ? "else " : string.Empty)}if({otherPropName} != null) {{");
-            writer.WriteLine($"return {otherPropName}!.{method.Name}();");
-            writer.CloseBlock();
-            if (!includeElse)
-                includeElse = true;
+            writer.WriteLine($"var {DeserializerName} = {DefaultDeserializerReturnInstance}{{}};");
+            foreach (var propName in complexProperties)
+                writer.WriteLine($"if({propName} != null){{{propName}!.{method.Name}().forEach((k,v) => {DeserializerName}.putIfAbsent(k, ()=>v));}}");
+            writer.WriteLine($"return {DeserializerName};");
         }
-        writer.WriteLine($"return {DefaultDeserializerReturnInstance}{{}};");
+        else
+        {
+            var includeElse = false;
+            foreach (var otherPropName in complexProperties)
+            {
+                writer.StartBlock($"{(includeElse ? "else " : string.Empty)}if({otherPropName} != null) {{");
+                writer.WriteLine($"return {otherPropName}!.{method.Name}();");
+                writer.CloseBlock();
+                if (!includeElse)
+                    includeElse = true;
+            }
+            writer.WriteLine($"return {DefaultDeserializerReturnInstance}{{}};");
+        }
     }
     private const string DeserializerName = "deserializers";
 

@@ -710,7 +710,6 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, PhpConventionServi
 
     private static void WriteDeserializerBodyForUnionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)
     {
-        var includeElse = false;
         var otherPropGetters = parentClass
             .GetPropertiesOfKind(CodePropertyKind.Custom)
             .Where(static x => !x.ExistsInBaseType && x.Getter != null)
@@ -719,16 +718,32 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, PhpConventionServi
             .ThenBy(static x => x.Name)
             .Select(static x => x.Getter!.Name.ToFirstCharacterLowerCase())
             .ToArray();
-        foreach (var otherPropGetter in otherPropGetters)
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation && otherPropGetters.Length > 0)
         {
-            writer.StartBlock($"{(includeElse ? "} else " : string.Empty)}if ($this->{otherPropGetter}() !== null) {{");
-            writer.WriteLine($"return $this->{otherPropGetter}()->{method.Name.ToFirstCharacterLowerCase()}();");
-            writer.DecreaseIndent();
-            if (!includeElse)
-                includeElse = true;
+            var propertiesNamesAsConditions = otherPropGetters
+                                    .Select(static x => $"$this->{x}() !== null")
+                                    .Aggregate(static (x, y) => $"{x} || {y}");
+            writer.StartBlock($"if ({propertiesNamesAsConditions}) {{");
+            var propertiesNamesAsArgument = otherPropGetters
+                                    .Select(static x => $"$this->{x}()")
+                                    .Aggregate(static (x, y) => $"{x}, {y}");
+            writer.WriteLine($"return ParseNodeHelper::mergeDeserializersForIntersectionWrapper({propertiesNamesAsArgument});");
+            writer.CloseBlock();
         }
-        if (otherPropGetters.Length != 0)
-            writer.CloseBlock(decreaseIndent: false);
+        else
+        {
+            var includeElse = false;
+            foreach (var otherPropGetter in otherPropGetters)
+            {
+                writer.StartBlock($"{(includeElse ? "} else " : string.Empty)}if ($this->{otherPropGetter}() !== null) {{");
+                writer.WriteLine($"return $this->{otherPropGetter}()->{method.Name.ToFirstCharacterLowerCase()}();");
+                writer.DecreaseIndent();
+                if (!includeElse)
+                    includeElse = true;
+            }
+            if (otherPropGetters.Length != 0)
+                writer.CloseBlock(decreaseIndent: false);
+        }
         writer.WriteLine($"return [];");
     }
 
@@ -998,6 +1013,26 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, PhpConventionServi
         }
         if (otherProps.Length != 0)
             writer.CloseBlock(decreaseIndent: false);
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+        {
+            foreach (var property in parentClass.GetPropertiesOfKind(CodePropertyKind.Custom)
+                .Where(static x => x.Setter != null && x.Type is CodeType)
+                .Where(static x => x.Type is CodeType { IsCollection: false, TypeDefinition: CodeClass or CodeInterface })
+                .Order(CodePropertyTypeForwardComparer)
+                .ThenBy(static x => x.Name))
+            {
+                var propertyType = (CodeType)property.Type;
+                if (propertyType.TypeDefinition is CodeInterface { OriginalClass: { } } typeInterface)
+                    propertyType = new CodeType
+                    {
+                        Name = typeInterface.OriginalClass.Name,
+                        TypeDefinition = typeInterface.OriginalClass,
+                        CollectionKind = propertyType.CollectionKind,
+                        IsNullable = propertyType.IsNullable,
+                    };
+                writer.WriteLine($"{ResultVarName}->{property.Setter!.Name.ToFirstCharacterLowerCase()}(new {conventions.GetTypeString(propertyType, currentElement, false)}());");
+            }
+        }
     }
 
     private void WriteFactoryMethodBodyForInheritedModel(IOrderedEnumerable<KeyValuePair<string, CodeType>> discriminatorMappings, LanguageWriter writer, CodeMethod method, string? varName = default)

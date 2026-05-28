@@ -149,10 +149,19 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, PythonConventionSe
                 if (propertyType.TypeDefinition is CodeClass && !propertyType.IsCollection)
                 {
                     var mappedType = parentClass.DiscriminatorInformation.DiscriminatorMappings.FirstOrDefault(x => x.Value.Name.Equals(propertyType.Name, StringComparison.OrdinalIgnoreCase));
-                    writer.StartBlock($"{(includeElse ? "el" : string.Empty)}if {DiscriminatorMappingVarName} and {DiscriminatorMappingVarName}.casefold() == \"{mappedType.Key.SanitizeDoubleQuote()}\".casefold():");
-                    _codeUsingWriter.WriteDeferredImport(parentClass, propertyType.Name, writer);
-                    writer.WriteLine($"{ResultVarName}.{property.Name} = {propertyType.Name}()");
-                    writer.DecreaseIndent();
+                    if (!string.IsNullOrEmpty(mappedType.Key) && parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+                    {
+                        writer.StartBlock($"{(includeElse ? "el" : string.Empty)}if {DiscriminatorMappingVarName} and {DiscriminatorMappingVarName}.casefold() == \"{mappedType.Key.SanitizeDoubleQuote()}\".casefold():");
+                        _codeUsingWriter.WriteDeferredImport(parentClass, propertyType.Name, writer);
+                        writer.WriteLine($"{ResultVarName}.{property.Name} = {propertyType.Name}()");
+                        writer.DecreaseIndent();
+                        includeElse = true;
+                    }
+                    else if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+                    {
+                        _codeUsingWriter.WriteDeferredImport(parentClass, propertyType.Name, writer);
+                        writer.WriteLine($"{ResultVarName}.{property.Name} = {propertyType.Name}()");
+                    }
                 }
                 else if (propertyType.TypeDefinition is CodeClass && propertyType.IsCollection || propertyType.TypeDefinition is null || propertyType.TypeDefinition is CodeEnum)
                 {
@@ -515,17 +524,34 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, PythonConventionSe
     }
     private void WriteDeserializerBodyForUnionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)
     {
-        foreach (var otherPropName in parentClass
-                                        .GetPropertiesOfKind(CodePropertyKind.Custom)
-                                        .Where(static x => !x.ExistsInBaseType)
-                                        .Where(static x => x.Type is CodeType propertyType && !propertyType.IsCollection && propertyType.TypeDefinition is CodeClass)
-                                        .OrderBy(static x => x, CodePropertyTypeForwardComparer)
-                                        .ThenBy(static x => x.Name)
-                                        .Select(static x => x.Name))
+        var complexProperties = parentClass
+                                    .GetPropertiesOfKind(CodePropertyKind.Custom)
+                                    .Where(static x => !x.ExistsInBaseType)
+                                    .Where(static x => x.Type is CodeType propertyType && !propertyType.IsCollection && propertyType.TypeDefinition is CodeClass)
+                                    .OrderBy(static x => x, CodePropertyTypeForwardComparer)
+                                    .ThenBy(static x => x.Name)
+                                    .Select(static x => x.Name)
+                                    .ToArray();
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation && complexProperties.Length > 0)
         {
-            writer.StartBlock($"if self.{otherPropName}:");
-            writer.WriteLine($"return self.{otherPropName}.{method.Name}()");
+            var propertiesNamesAsConditions = complexProperties
+                                    .Select(static x => $"self.{x}")
+                                    .Aggregate(static (x, y) => $"{x} or {y}");
+            writer.StartBlock($"if {propertiesNamesAsConditions}:");
+            var propertiesNamesAsArgument = complexProperties
+                                    .Select(static x => $"self.{x}")
+                                    .Aggregate(static (x, y) => $"{x}, {y}");
+            writer.WriteLine($"return ParseNodeHelper.merge_deserializers_for_intersection_wrapper({propertiesNamesAsArgument})");
             writer.DecreaseIndent();
+        }
+        else
+        {
+            foreach (var otherPropName in complexProperties)
+            {
+                writer.StartBlock($"if self.{otherPropName}:");
+                writer.WriteLine($"return self.{otherPropName}.{method.Name}()");
+                writer.DecreaseIndent();
+            }
         }
         writer.WriteLine($"return {DefaultDeserializerValue}");
     }

@@ -292,6 +292,26 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, GoConventionServic
         }
         if (otherProps.Length != 0)
             writer.CloseBlock(decreaseIndent: false);
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+        {
+            foreach (var property in parentClass.GetPropertiesOfKind(CodePropertyKind.Custom)
+                                                .Where(static x => x.Setter != null)
+                                                .Where(static x => x.Type is CodeType xType && !xType.IsCollection && (xType.TypeDefinition is CodeClass || xType.TypeDefinition is CodeInterface))
+                                                .OrderBy(static x => x, CodePropertyTypeForwardComparer)
+                                                .ThenBy(static x => x.Name))
+            {
+                var propertyType = property.Type as CodeType;
+                if (propertyType!.TypeDefinition is CodeInterface typeInterface && typeInterface.OriginalClass != null)
+                    propertyType = new CodeType
+                    {
+                        Name = typeInterface.OriginalClass.Name,
+                        TypeDefinition = typeInterface.OriginalClass,
+                        CollectionKind = propertyType.CollectionKind,
+                        IsNullable = propertyType.IsNullable,
+                    };
+                writer.WriteLine($"{ResultVarName}.{property.Setter!.Name.ToFirstCharacterUpperCase()}({conventions.GetImportedStaticMethodName(propertyType!, parentClass)}())");
+            }
+        }
     }
 
     private void WriteMethodDocumentation(CodeMethod code, string methodName, LanguageWriter writer)
@@ -644,9 +664,8 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, GoConventionServic
         else
             WriteDeserializerBodyForInheritedModel(codeElement, parentClass, writer, inherits);
     }
-    private static void WriteDeserializerBodyForUnionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)
+    private void WriteDeserializerBodyForUnionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)
     {
-        var includeElse = false;
         var otherPropGetters = parentClass
                                 .GetPropertiesOfKind(CodePropertyKind.Custom)
                                 .Where(static x => !x.ExistsInBaseType && x.Getter != null)
@@ -655,16 +674,31 @@ public class CodeMethodWriter : BaseElementWriter<CodeMethod, GoConventionServic
                                 .ThenBy(static x => x.Name)
                                 .Select(static x => x.Getter!.Name.ToFirstCharacterUpperCase())
                                 .ToArray();
-        foreach (var otherPropGetter in otherPropGetters)
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation && otherPropGetters.Length > 0)
         {
-            writer.StartBlock($"{(includeElse ? "} else " : string.Empty)}if m.{otherPropGetter}() != nil {{");
-            writer.WriteLine($"return m.{otherPropGetter}().{method.Name.ToFirstCharacterUpperCase()}()");
-            writer.DecreaseIndent();
-            if (!includeElse)
-                includeElse = true;
+            var propertiesNamesAsConditions = otherPropGetters
+                                    .Select(static x => $"m.{x}() != nil")
+                                    .Aggregate(static (x, y) => $"{x} || {y}");
+            writer.StartBlock($"if {propertiesNamesAsConditions} {{");
+            var propertiesNamesAsArgument = otherPropGetters
+                                    .Aggregate(static (x, y) => $"m.{x}(), m.{y}()");
+            writer.WriteLine($"return {conventions.SerializationHash}.MergeDeserializersForIntersectionWrapper({propertiesNamesAsArgument})");
+            writer.CloseBlock();
         }
-        if (otherPropGetters.Length != 0)
-            writer.CloseBlock(decreaseIndent: false);
+        else
+        {
+            var includeElse = false;
+            foreach (var otherPropGetter in otherPropGetters)
+            {
+                writer.StartBlock($"{(includeElse ? "} else " : string.Empty)}if m.{otherPropGetter}() != nil {{");
+                writer.WriteLine($"return m.{otherPropGetter}().{method.Name.ToFirstCharacterUpperCase()}()");
+                writer.DecreaseIndent();
+                if (!includeElse)
+                    includeElse = true;
+            }
+            if (otherPropGetters.Length != 0)
+                writer.CloseBlock(decreaseIndent: false);
+        }
         writer.WriteLine($"return make({method.ReturnType.Name})");
     }
     private void WriteDeserializerBodyForIntersectionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)

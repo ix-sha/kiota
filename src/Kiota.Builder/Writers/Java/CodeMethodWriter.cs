@@ -277,6 +277,17 @@ public partial class CodeMethodWriter : BaseElementWriter<CodeMethod, JavaConven
         }
         if (otherProps.Length != 0)
             writer.CloseBlock(decreaseIndent: false);
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation)
+        {
+            foreach (var property in parentClass.GetPropertiesOfKind(CodePropertyKind.Custom)
+                                                .Where(static x => x.Setter != null)
+                                                .Where(static x => x.Type is CodeType xType && !xType.IsCollection && (xType.TypeDefinition is CodeClass || xType.TypeDefinition is CodeInterface))
+                                                .OrderBy(static x => x, CodePropertyTypeForwardComparer)
+                                                .ThenBy(static x => x.Name))
+            {
+                writer.WriteLine($"{ResultVarName}.{property.Setter!.Name}(new {conventions.GetTypeString(property.Type, currentElement, false)}());");
+            }
+        }
     }
     private void WriteRequestBuilderBody(CodeClass parentClass, CodeMethod codeElement, LanguageWriter writer)
     {
@@ -451,7 +462,6 @@ public partial class CodeMethodWriter : BaseElementWriter<CodeMethod, JavaConven
     private const string DeserializerReturnType = "HashMap<String, java.util.function.Consumer<ParseNode>>";
     private static void WriteDeserializerBodyForUnionModel(CodeMethod method, CodeClass parentClass, LanguageWriter writer)
     {
-        var includeElse = false;
         var otherPropGetters = parentClass
                                 .GetPropertiesOfKind(CodePropertyKind.Custom)
                                 .Where(static x => !x.ExistsInBaseType)
@@ -460,16 +470,32 @@ public partial class CodeMethodWriter : BaseElementWriter<CodeMethod, JavaConven
                                 .ThenBy(static x => x.Name)
                                 .Select(static x => x.Getter!.Name)
                                 .ToArray();
-        foreach (var otherPropGetter in otherPropGetters)
+        if (!parentClass.DiscriminatorInformation.HasBasicDiscriminatorInformation && otherPropGetters.Length > 0)
         {
-            writer.StartBlock($"{(includeElse ? "} else " : string.Empty)}if (this.{otherPropGetter}() != null) {{");
-            writer.WriteLine($"return this.{otherPropGetter}().{method.Name}();");
-            writer.DecreaseIndent();
-            if (!includeElse)
-                includeElse = true;
+            var propertiesNamesAsConditions = otherPropGetters
+                                    .Select(static x => $"this.{x}() != null")
+                                    .Aggregate(static (x, y) => $"{x} || {y}");
+            writer.StartBlock($"if ({propertiesNamesAsConditions}) {{");
+            var propertiesNamesAsArgument = otherPropGetters
+                                    .Select(static x => $"this.{x}()")
+                                    .Aggregate(static (x, y) => $"{x}, {y}");
+            writer.WriteLine($"return ParseNodeHelper.mergeDeserializersForIntersectionWrapper({propertiesNamesAsArgument});");
+            writer.CloseBlock();
         }
-        if (otherPropGetters.Length != 0)
-            writer.CloseBlock(decreaseIndent: false);
+        else
+        {
+            var includeElse = false;
+            foreach (var otherPropGetter in otherPropGetters)
+            {
+                writer.StartBlock($"{(includeElse ? "} else " : string.Empty)}if (this.{otherPropGetter}() != null) {{");
+                writer.WriteLine($"return this.{otherPropGetter}().{method.Name}();");
+                writer.DecreaseIndent();
+                if (!includeElse)
+                    includeElse = true;
+            }
+            if (otherPropGetters.Length != 0)
+                writer.CloseBlock(decreaseIndent: false);
+        }
         writer.WriteLine($"return new {DeserializerReturnType}();");
     }
     private static void WriteDeserializerBodyForIntersectionModel(CodeClass parentClass, LanguageWriter writer)
